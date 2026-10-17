@@ -53,6 +53,33 @@ const SAFE_GITHUB_REF = /^[A-Za-z0-9._\/-]{1,200}$/
 const COMMITS_CACHE_TTL_SECONDS = 600
 const commitsCache = new Map()
 
+
+const decodeXml = (v) => String(v || '')
+  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+  .trim()
+
+// Fallback when api.github.com rate-limits Cloudflare egress IPs: parse the public Atom feed.
+async function fetchCommitsFromAtom(owner, repo, sha, perPage) {
+  const ref = sha || 'HEAD'
+  const res = await fetch(`https://github.com/${owner}/${repo}/commits/${ref.split('/').map(encodeURIComponent).join('/')}.atom`, {
+    headers: { 'User-Agent': 'CFSM-Theme-Store', 'Accept': 'application/atom+xml' }
+  })
+  if (!res.ok) return null
+  const xml = await res.text()
+  const commits = []
+  for (const m of xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)) {
+    const body = m[1]
+    const id = (body.match(/<id>[^<]*Commit\/([a-f0-9]{40})<\/id>/i) || [])[1]
+    if (!id) continue
+    const date = decodeXml((body.match(/<updated>([^<]*)<\/updated>/) || [])[1])
+    const title = decodeXml((body.match(/<title>([\s\S]*?)<\/title>/) || [])[1])
+    commits.push({ sha: id, commit: { message: title, author: { date }, committer: { date } } })
+    if (commits.length >= perPage) break
+  }
+  return commits.length ? commits : null
+}
+
 export async function handleThemeCommits(url) {
   const owner = url.searchParams.get('owner') || ''
   const repo = url.searchParams.get('repo') || ''
@@ -77,12 +104,16 @@ export async function handleThemeCommits(url) {
     const res = await fetch(apiUrl.href, {
       headers: { 'User-Agent': 'CFSM-Theme-Store', 'Accept': 'application/vnd.github+json' }
     })
-    if (!res.ok) {
+    const data = res.ok ? await res.json().catch(() => null) : null
+    if (!Array.isArray(data)) {
+      const atom = await fetchCommitsFromAtom(owner, repo, sha, perPage).catch(() => null)
+      if (atom) {
+        commitsCache.set(key, { commits: atom, time: now })
+        return { ok: true, commits: atom, cached: false }
+      }
       if (hit) return { ok: true, commits: hit.commits, cached: true }
       return { ok: false, status: 502, error: 'themeCommitsProxyFailed' }
     }
-    const data = await res.json()
-    if (!Array.isArray(data)) return { ok: false, status: 502, error: 'themeCommitsProxyFailed' }
     // keep only the fields the frontend uses
     const commits = data.map(c => ({
       sha: c?.sha,
@@ -96,6 +127,8 @@ export async function handleThemeCommits(url) {
     if (commitsCache.size > 200) commitsCache.delete(commitsCache.keys().next().value)
     return { ok: true, commits, cached: false }
   } catch (e) {
+    const atom = await fetchCommitsFromAtom(owner, repo, sha, perPage).catch(() => null)
+    if (atom) return { ok: true, commits: atom, cached: false }
     if (hit) return { ok: true, commits: hit.commits, cached: true }
     return { ok: false, status: 502, error: 'themeCommitsProxyFailed' }
   }
