@@ -5,7 +5,7 @@ import { handleAdminAPI } from './handlers/admin.js';
 import { serveFrontend } from './handlers/frontend.js';
 import { handleUpdate, handleWebSocketUpgrade, handleUpdateWebSocketUpgrade } from './handlers/update.js';
 import { handleServerAPI, handleServersAPI } from './handlers/dashboard.js';
-import { handleTheme } from './handlers/theme.js';
+import { handleTheme, handleThemeCommits } from './handlers/theme.js';
 import { isValidThemeOptions, loadSettings, loadSiteSettings, loadAppearanceOptions, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, saveThemeOptions, setDebug, debug } from './utils/settings.js';
 import { omitNullLossProbeFields } from './handlers/dashboard.js';
 import { checkAuth, simpleAuthResponse } from './middleware/auth.js';
@@ -362,6 +362,19 @@ export default {
 
         return createSuccessResponse(themeResult.themeStore, {
           'X-CFSM-Theme-Source': themeResult.cached ? 'cache' : 'raw'
+        })
+      }},
+      { method: 'GET', path: '/theme/commits', handler: async () => {
+        const result = await handleThemeCommits(url)
+        if (!result.ok) {
+          return new Response(JSON.stringify({ error: result.error, code: result.status, fallback: 'client' }), {
+            status: result.status,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+        return new Response(JSON.stringify(result.commits), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'X-CFSM-Theme-Source': result.cached ? 'cache' : 'github' }
         })
       }},
       { method: 'POST', path: '/api/theme_options', handler: async () => {
