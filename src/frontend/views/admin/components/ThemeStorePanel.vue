@@ -444,6 +444,20 @@ const fetchThemeCommitVersions = async (theme) => {
   const source = getGithubCommitSource(theme)
   if (!source) return { versions: [], failed: false }
 
+  // Prefer the Worker proxy (works where api.github.com is blocked), fall back to GitHub directly.
+  try {
+    const qs = new URLSearchParams({ owner: source.owner, repo: source.repo, sha: source.branch, per_page: String(COMMIT_LIMIT) })
+    const proxied = await http.get(`/theme/commits?${qs.toString()}`, { timeoutMs: GITHUB_FETCH_TIMEOUT_MS + 4000 })
+    if (!proxied.error && Array.isArray(proxied.data)) {
+      const versions = proxied.data
+        .map(commit => buildCommitVersion(source.repoUrl, commit))
+        .filter(Boolean)
+      if (versions.length) return { versions, failed: false }
+    }
+  } catch (_) {
+    // ignore and fall back
+  }
+
   try {
     const apiUrl = new URL(`https://api.github.com/repos/${source.owner}/${source.repo}/commits`)
     apiUrl.searchParams.set('sha', source.branch)
